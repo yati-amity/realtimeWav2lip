@@ -105,10 +105,9 @@
                     </div>
                     <div class="blockquote blockquote-primary">
                       <h4>Generate Wav2Lip</h4>
-                      <form method="POST" action="{{ url_for('tasks') }}">
-                        <input type="submit" value="Start" name="start" class="btn btn-outline-success btn-fw">
-                        <input type="submit" value="Stop" name="stop" class="btn btn-outline-danger btn-fw">
-                    </form> 
+                      <button id="startBtn" class="btn btn-outline-success btn-fw" onclick="startLipSync()">Start</button>
+                      <button id="stopBtn" class="btn btn-outline-danger btn-fw" onclick="stopLipSync()">Stop</button>
+                      <span id="micStatus" style="margin-left: 10px;"></span>
                     </div>
                   </div>
                 </div>
@@ -161,5 +160,146 @@
     <script src="../static/js/dashboard.js"></script>
     <script src="../static/js/form-browse-file.js"></script>
     <!-- End custom js for this page -->
+
+    <!-- Audio capture and lip-sync control -->
+    <script>
+      let audioContext = null;
+      let mediaStream = null;
+      let scriptProcessor = null;
+      let isCapturing = false;
+      const TARGET_SAMPLE_RATE = 16000;
+      const CHUNK_DURATION = 0.5; // seconds - matches server expectation
+
+      function downsampleBuffer(buffer, inputRate, outputRate) {
+        if (inputRate === outputRate) {
+          return buffer;
+        }
+        const ratio = inputRate / outputRate;
+        const newLength = Math.round(buffer.length / ratio);
+        const result = new Float32Array(newLength);
+        let offsetResult = 0;
+        let offsetBuffer = 0;
+        while (offsetResult < result.length) {
+          const nextOffsetBuffer = Math.round((offsetResult + 1) * ratio);
+          let accum = 0, count = 0;
+          for (let i = offsetBuffer; i < nextOffsetBuffer && i < buffer.length; i++) {
+            accum += buffer[i];
+            count++;
+          }
+          result[offsetResult] = accum / count;
+          offsetResult++;
+          offsetBuffer = nextOffsetBuffer;
+        }
+        return result;
+      }
+
+      function floatTo16BitPCM(float32Array) {
+        const int16 = new Int16Array(float32Array.length);
+        for (let i = 0; i < float32Array.length; i++) {
+          const s = Math.max(-1, Math.min(1, float32Array[i]));
+          int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+        }
+        return int16;
+      }
+
+      async function startMicCapture() {
+        try {
+          mediaStream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              channelCount: 1,
+              sampleRate: TARGET_SAMPLE_RATE,
+              echoCancellation: true,
+              noiseSuppression: true
+            }
+          });
+
+          audioContext = new (window.AudioContext || window.webkitAudioContext)();
+          const source = audioContext.createMediaStreamSource(mediaStream);
+          const inputRate = audioContext.sampleRate;
+          const bufferSize = 4096;
+
+          // Accumulate samples until we have CHUNK_DURATION worth
+          let sampleBuffer = [];
+          const samplesPerChunk = Math.round(TARGET_SAMPLE_RATE * CHUNK_DURATION);
+
+          scriptProcessor = audioContext.createScriptProcessor(bufferSize, 1, 1);
+          scriptProcessor.onaudioprocess = function(e) {
+            if (!isCapturing) return;
+            const inputData = e.inputBuffer.getChannelData(0);
+            const downsampled = downsampleBuffer(inputData, inputRate, TARGET_SAMPLE_RATE);
+
+            // Accumulate
+            for (let i = 0; i < downsampled.length; i++) {
+              sampleBuffer.push(downsampled[i]);
+            }
+
+            // Send when we have enough
+            while (sampleBuffer.length >= samplesPerChunk) {
+              const chunk = new Float32Array(sampleBuffer.splice(0, samplesPerChunk));
+              const pcm16 = floatTo16BitPCM(chunk);
+              sendAudioChunk(pcm16);
+            }
+          };
+
+          source.connect(scriptProcessor);
+          scriptProcessor.connect(audioContext.destination);
+          isCapturing = true;
+
+          document.getElementById('micStatus').innerText = 'Mic active';
+          console.log('Mic capture started, input rate:', inputRate, 'target:', TARGET_SAMPLE_RATE);
+        } catch (err) {
+          console.error('Mic access error:', err);
+          document.getElementById('micStatus').innerText = 'Mic error: ' + err.message;
+        }
+      }
+
+      function stopMicCapture() {
+        isCapturing = false;
+        if (scriptProcessor) {
+          scriptProcessor.disconnect();
+          scriptProcessor = null;
+        }
+        if (audioContext) {
+          audioContext.close();
+          audioContext = null;
+        }
+        if (mediaStream) {
+          mediaStream.getTracks().forEach(t => t.stop());
+          mediaStream = null;
+        }
+        document.getElementById('micStatus').innerText = '';
+      }
+
+      function sendAudioChunk(pcm16Array) {
+        const blob = new Blob([pcm16Array.buffer], { type: 'application/octet-stream' });
+        fetch('/audio', {
+          method: 'POST',
+          body: blob
+        }).catch(err => console.error('Audio send error:', err));
+      }
+
+      function startLipSync() {
+        // Send start command via AJAX (no page reload)
+        const formData = new FormData();
+        formData.append('start', 'Start');
+        fetch('/requests', { method: 'POST', body: formData })
+          .then(() => {
+            console.log('Start sent');
+            // Start mic capture from browser
+            startMicCapture();
+          })
+          .catch(err => console.error('Start error:', err));
+      }
+
+      function stopLipSync() {
+        stopMicCapture();
+        // Send stop command via AJAX (no page reload)
+        const formData = new FormData();
+        formData.append('stop', 'Stop');
+        fetch('/requests', { method: 'POST', body: formData })
+          .then(() => console.log('Stop sent'))
+          .catch(err => console.error('Stop error:', err));
+      }
+    </script>
   </body>
 </html>

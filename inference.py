@@ -1,8 +1,7 @@
 import argparse
 import math
 import os
-#import platform
-#import subprocess
+import queue
 
 import cv2
 import numpy as np
@@ -12,20 +11,16 @@ from tqdm import tqdm
 import openvino as ov
 
 import audio
-# from face_detect import face_rect
 from models import Wav2Lip
 
 from batch_face import RetinaFace
 from time import time, sleep
 
-import pyaudio
-
-#import tkinter as tk
 from PIL import Image, ImageTk
 
 parser = argparse.ArgumentParser(description='Inference code to lip-sync videos in the wild using Wav2Lip models')
 
-parser.add_argument('--checkpoint_path', type=str, default = "./Wav2Lip/checkpoints/wav2lip_gan.pth",
+parser.add_argument('--checkpoint_path', type=str, default = "./Wav2Lip/checkpoints/wav2lip_onnx_export.onnx",
                     help='Name of saved checkpoint to load weights from', required=False)
 
 parser.add_argument('--face', type=str, default="Elon_Musk.jpg",
@@ -72,15 +67,13 @@ class Wav2LipInference:
     
     def __init__(self, args) -> None:
         
-        self.CHUNK = 1024 # piece of audio data, no of frames per buffer during audio capture, large chunk size reduces computational overhead but may add latency and vise versa
-        self.FORMAT = pyaudio.paInt16
-        self.CHANNELS = 1 # no of audio channels, 1 means monaural audio
         self.RATE = 16000 # sample rate of the audio stream, 16000 samples/second
         self.RECORD_SECONDS = 0.5 # time for which we capture the audio
         self.mel_step_size = 16 # mel freq step size
         self.audio_fs = 16000    # Sample rate
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.args = args
+        self.use_openvino = False
 
         print('Using {} for inference.'.format(self.device))
 
@@ -91,27 +84,36 @@ class Wav2LipInference:
         self.img_tk = None
 
 
-    def load_wav2lip_openvino_model(self):
+    def load_wav2lip_openvino_model(self, model_path=None, device_name=None):
         '''
         func to load open vino model
-        for wav2lip
+        for wav2lip. Supports .xml (OpenVINO IR) and .onnx formats.
         '''
 
         print("Calling wav2lip openvino model for inference...")
         core = ov.Core()
         devices = core.available_devices
-        print(devices[0])
-        model = core.read_model(model=os.path.join("./openvino_model/", "wav2lip_openvino_model.xml"))
-        compiled_model = core.compile_model(model = model, device_name = devices[0])
+        print("Available OpenVINO devices:", devices)
+
+        if model_path is None:
+            model_path = os.path.join("./openvino_model/", "wav2lip_openvino_model.xml")
+
+        if device_name is None:
+            device_name = devices[0]
+
+        print(f"Loading model from: {model_path} on device: {device_name}")
+        model = core.read_model(model=model_path)
+        compiled_model = core.compile_model(model=model, device_name=device_name)
         return compiled_model
     
     def load_model_weights(self, checkpoint_path):
 
         if self.device == 'cuda':
-            checkpoint = torch.load(checkpoint_path)
+            checkpoint = torch.load(checkpoint_path, weights_only=False)
         else:
             checkpoint = torch.load(checkpoint_path,
-                                    map_location=lambda storage, loc: storage)
+                                    map_location=lambda storage, loc: storage,
+                                    weights_only=False)
         return checkpoint
 
     def load_wav2lip_model(self, checkpoint_path):
@@ -130,17 +132,37 @@ class Wav2LipInference:
 
     def load_model(self):
 
-        if self.device=='cpu':
+        checkpoint_path = self.args.checkpoint_path
+        is_onnx = checkpoint_path.endswith('.onnx')
+        is_openvino = checkpoint_path.endswith('.xml')
+
+        if is_onnx or is_openvino:
+            # Use OpenVINO for both ONNX and OpenVINO IR formats
+            if self.device == 'cuda':
+                # Prefer GPU device in OpenVINO when CUDA is available
+                device_name = 'GPU'
+            else:
+                device_name = 'CPU'
+            self.use_openvino = True
+            return self.load_wav2lip_openvino_model(model_path=checkpoint_path, device_name=device_name)
+        elif self.device == 'cpu':
+            self.use_openvino = True
             return self.load_wav2lip_openvino_model()
         else:
+            self.use_openvino = False
             return self.load_wav2lip_model(self.args.checkpoint_path)
 
     def load_batch_face_model(self):
 
+        model_path = "checkpoints/mobilenet.pth"
+        if not os.path.isfile(model_path):
+            print(f"Face detection model not found at {model_path}, downloading automatically...")
+            model_path = None
+
         if self.device=='cpu':
-            return RetinaFace(gpu_id=-1, model_path="checkpoints/mobilenet.pth", network="mobilenet")
+            return RetinaFace(gpu_id=-1, model_path=model_path, network="mobilenet")
         else:
-            return RetinaFace(gpu_id=0, model_path="checkpoints/mobilenet.pth", network="mobilenet")
+            return RetinaFace(gpu_id=0, model_path=model_path, network="mobilenet")
             
     def face_rect(self, images):
 
@@ -156,28 +178,33 @@ class Wav2LipInference:
                     prev_ret = tuple(map(int, box))
                 yield prev_ret
 
-    def record_audio_stream(self, stream):
-
+    def get_audio_from_queue(self, audio_queue, timeout=5.0):
+        '''
+        Read audio data from the browser audio queue.
+        Blocks until audio is available or timeout.
+        Returns int16 numpy array.
+        '''
         stime = time()
-        print("Recording audio ...")
-        frames = []
-        for i in range(0, int(self.RATE / self.CHUNK * self.RECORD_SECONDS)):
-            frames.append(stream.read(self.CHUNK))  # Append audio data as numpy array
-
-        print("Finished recording for curr time stamp ....")
-        print("recording time, ", time() - stime) 
-        
-        #audio_data = np.concatenate(frames)  # Combine all recorded frames into a single numpy array
-        audio_data = np.frombuffer(b''.join(frames), dtype=np.int16)
-        return audio_data
+        print("Waiting for audio from browser ...")
+        try:
+            audio_data = audio_queue.get(timeout=timeout)
+            print(f"Got audio chunk: {len(audio_data)} samples, time waited: {time()-stime:.2f}s")
+            return audio_data
+        except queue.Empty:
+            print("No audio received from browser (timeout)")
+            # Return silence so the pipeline doesn't crash
+            num_samples = int(self.RATE * self.RECORD_SECONDS)
+            return np.zeros(num_samples, dtype=np.int16)
 
     def get_mel_chunks(self, audio_data):
 
         # Now you can perform mel chunk extraction directly on audio_data
-        # Assuming you have functions audio.load_wav and audio.melspectrogram defined elsewhere in your code
+        # audio.melspectrogram expects float waveform data, convert int16 -> float
         stime = time()
-        # Example:
-        wav = audio_data
+        if audio_data.dtype == np.int16:
+            wav = audio_data.astype(np.float32) / 32768.0
+        else:
+            wav = audio_data.astype(np.float32)
         mel = audio.melspectrogram(wav)
         print(mel.shape, time()-stime)
 
@@ -292,11 +319,11 @@ class Wav2LipInference:
             yield img_batch, mel_batch, frame_batch, coords_batch
 
 
-def update_frames(full_frames, stream, inference_pipline):
+def update_frames(full_frames, audio_queue, inference_pipline):
         
     stime = time()
-    # convert recording to mel chunks
-    audio_data = inference_pipline.record_audio_stream(stream)
+    # get audio from browser queue
+    audio_data = inference_pipline.get_audio_from_queue(audio_queue)
     mel_chunks = inference_pipline.get_mel_chunks(audio_data)
     print(f"Time to process audio input {time()-stime}")
 
@@ -310,7 +337,7 @@ def update_frames(full_frames, stream, inference_pipline):
     for i, (img_batch, mel_batch, frames, coords) in enumerate(tqdm(gen,
                                         total=int(np.ceil(float(len(mel_chunks))/batch_size)))):
         
-        if inference_pipline.device=='cpu':
+        if inference_pipline.use_openvino:
             img_batch = np.transpose(img_batch, (0, 3, 1, 2))
             mel_batch = np.transpose(mel_batch, (0, 3, 1, 2))
             print(img_batch.shape, mel_batch.shape)
@@ -340,16 +367,15 @@ def update_frames(full_frames, stream, inference_pipline):
             buffer = np.array(buffer)
             buffer = buffer.tobytes()
             
-            return (b'--frame\r\n'
+            yield (b'--frame\r\n'
                    b'Content-Type: image/jpeg\r\n\r\n' + buffer + b'\r\n')
                     
 
-def main(imagefilepath, flag):
+def main(imagefilepath, get_flag, audio_queue):
 
     args = parser.parse_args()
     args.img_size = 96
     args.face = imagefilepath
-    inference_pipline = Wav2LipInference(args)
 
     if os.path.isfile(args.face) and args.face.split('.')[-1] in ['jpg', 'png', 'jpeg']:
         args.static = True
@@ -376,8 +402,6 @@ def main(imagefilepath, flag):
 
             aspect_ratio = frame.shape[1] / frame.shape[0]
             frame = cv2.resize(frame, (int(args.out_height * aspect_ratio), args.out_height))
-            # if args.resize_factor > 1:
-            #     frame = cv2.resize(frame, (frame.shape[1]//args.resize_factor, frame.shape[0]//args.resize_factor))
 
             if args.rotate:
                 frame = cv2.rotate(frame, cv2.cv2.ROTATE_90_CLOCKWISE)
@@ -392,21 +416,24 @@ def main(imagefilepath, flag):
 
     print ("Number of frames available for inference: "+str(len(full_frames)))
 
-    p = pyaudio.PyAudio()
-    stream = p.open(format=inference_pipline.FORMAT,
-                    channels=inference_pipline.CHANNELS,
-                    rate=inference_pipline.RATE,
-                    input=True,
-                    frames_per_buffer=inference_pipline.CHUNK)
-    
+    # Show the original face while waiting for Start
+    _, init_buffer = cv2.imencode('.jpg', full_frames[0])
+    init_bytes = init_buffer.tobytes()
+
+    # Wait for the flag to be set to 1 (Start button)
+    while not get_flag():
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + init_bytes + b'\r\n')
+        sleep(0.1)
+
+    # Initialize model only when Start is pressed
+    inference_pipline = Wav2LipInference(args)
+
     inference_pipline.face_detect_cache_result = inference_pipline.face_detect([full_frames[0]])
     while True:
-        if not flag:
-            stream.stop_stream()
-            stream.close()
-            p.terminate()
-            return b""
-        print(f"Model inference flag {flag}")
-        yield update_frames(full_frames, stream, inference_pipline)
+        if not get_flag():
+            return
+        print(f"Model inference flag {get_flag()}")
+        yield from update_frames(full_frames, audio_queue, inference_pipline)
     
 

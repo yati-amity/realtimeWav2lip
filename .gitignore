@@ -8,7 +8,6 @@ __pycache__
 *.wav
 Wav2Lip/filelists/*.txt
 Wav2Lip/evaluation/test_filelists/lr*.txt
-*.pyc
 *.mkv
 *.webm
 *.mp3
@@ -16,3 +15,13 @@ Wav2Lip/checkpoints/
 openvino_model/
 node_modules
 bkp/
+
+# SSL certificates (generated at runtime for HTTPS)
+*.pem
+
+# Runtime artifacts
+temp/
+results/
+
+# Uploaded images at runtime (keep the sample Elon_Musk.jpg via git)
+# assets/uploaded_images/ is tracked but user uploads should not be committed
