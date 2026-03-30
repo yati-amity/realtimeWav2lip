@@ -16,7 +16,7 @@ from models import Wav2Lip
 from batch_face import RetinaFace
 from time import time, sleep
 
-from PIL import Image, ImageTk
+from PIL import Image
 
 parser = argparse.ArgumentParser(description='Inference code to lip-sync videos in the wild using Wav2Lip models')
 
