@@ -7,7 +7,6 @@ import threading
 import queue
 import numpy as np
 import librosa
-import tempfile
 
 app=Flask(__name__) 
 
@@ -127,15 +126,17 @@ def upload_audio():
         if audio_file.filename == '':
             return jsonify({"status": "error", "message": "No selected file"}), 400
 
-        # Save to temp file so librosa can detect the format
+        # Clear old uploaded audio files, then save new one
         ext = os.path.splitext(audio_file.filename)[1] or '.wav'
-        with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
-            tmp.write(audio_file.read())
-            tmp_path = tmp.name
-        try:
-            wav, sr = librosa.load(tmp_path, sr=16000, mono=True)
-        finally:
-            os.unlink(tmp_path)
+        playback_dir = os.path.join('static', 'uploaded_audio')
+        os.makedirs(playback_dir, exist_ok=True)
+        for old_file in os.listdir(playback_dir):
+            os.remove(os.path.join(playback_dir, old_file))
+        playback_filename = 'current_audio' + ext
+        playback_path = os.path.join(playback_dir, playback_filename)
+        audio_file.save(playback_path)
+
+        wav, sr = librosa.load(playback_path, sr=16000, mono=True)
 
         # Convert float32 [-1,1] to int16 PCM (same format as browser mic)
         wav_int16 = (wav * 32767).astype(np.int16)
@@ -169,8 +170,9 @@ def upload_audio():
         flag = 1
 
         duration = len(wav_int16) / 16000
+        audio_url = '/' + playback_path.replace(os.sep, '/')
         print(f"Audio file uploaded: {audio_file.filename}, duration: {duration:.1f}s, chunks: {num_chunks}")
-        return jsonify({"status": "ok", "duration": duration, "chunks": num_chunks})
+        return jsonify({"status": "ok", "duration": duration, "chunks": num_chunks, "audio_url": audio_url})
     except Exception as e:
         print(f"Audio file upload error: {e}")
         return jsonify({"status": "error", "message": str(e)}), 400

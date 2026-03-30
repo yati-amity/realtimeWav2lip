@@ -301,6 +301,13 @@
 
       function stopLipSync() {
         stopMicCapture();
+        // Stop audio file playback if active
+        if (audioPlayer) {
+          audioPlayer.pause();
+          audioPlayer = null;
+          document.getElementById('audioUploadStatus').textContent = '';
+          document.getElementById('uploadAudioBtn').disabled = false;
+        }
         // Send stop command via AJAX (no page reload)
         const formData = new FormData();
         formData.append('stop', 'Stop');
@@ -309,7 +316,9 @@
           .catch(err => console.error('Stop error:', err));
       }
 
-      // Audio file upload
+      // Audio file upload and playback
+      let audioPlayer = null;
+
       document.getElementById('audioFileInput').addEventListener('change', function() {
         const fileName = this.files[0] ? this.files[0].name : '';
         document.getElementById('selectedAudioName').textContent = fileName;
@@ -320,6 +329,12 @@
       function uploadAudioFile() {
         const fileInput = document.getElementById('audioFileInput');
         if (!fileInput.files[0]) return;
+
+        // Stop any existing playback
+        if (audioPlayer) {
+          audioPlayer.pause();
+          audioPlayer = null;
+        }
 
         const statusEl = document.getElementById('audioUploadStatus');
         const btn = document.getElementById('uploadAudioBtn');
@@ -333,7 +348,14 @@
           .then(r => r.json())
           .then(data => {
             if (data.status === 'ok') {
-              statusEl.textContent = `Playing ${data.duration.toFixed(1)}s audio (${data.chunks} chunks)`;
+              statusEl.textContent = `Lip-syncing ${data.duration.toFixed(1)}s audio`;
+              // Play the audio in the browser
+              audioPlayer = new Audio(data.audio_url);
+              audioPlayer.play().catch(err => console.error('Audio playback error:', err));
+              audioPlayer.onended = function() {
+                statusEl.textContent = 'Done';
+                btn.disabled = false;
+              };
             } else {
               statusEl.textContent = 'Error: ' + data.message;
               btn.disabled = false;
