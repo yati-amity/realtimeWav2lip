@@ -6,6 +6,8 @@ import time
 import threading
 import queue
 import numpy as np
+import librosa
+import tempfile
 
 app=Flask(__name__) 
 
@@ -113,6 +115,67 @@ def receive_audio():
         return jsonify({"status": "error", "message": str(e)}), 400
 
 
+# Endpoint to receive an audio file, decode it, and feed chunks into the audio queue
+@app.route('/upload_audio', methods=['POST'])
+def upload_audio():
+    global flag
+    try:
+        if 'audio' not in request.files:
+            return jsonify({"status": "error", "message": "No audio file"}), 400
+
+        audio_file = request.files['audio']
+        if audio_file.filename == '':
+            return jsonify({"status": "error", "message": "No selected file"}), 400
+
+        # Save to temp file so librosa can detect the format
+        ext = os.path.splitext(audio_file.filename)[1] or '.wav'
+        with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+            tmp.write(audio_file.read())
+            tmp_path = tmp.name
+        try:
+            wav, sr = librosa.load(tmp_path, sr=16000, mono=True)
+        finally:
+            os.unlink(tmp_path)
+
+        # Convert float32 [-1,1] to int16 PCM (same format as browser mic)
+        wav_int16 = (wav * 32767).astype(np.int16)
+
+        # Clear any existing audio in the queue
+        while not audio_queue.empty():
+            try:
+                audio_queue.get_nowait()
+            except queue.Empty:
+                break
+
+        # Split into 0.5s chunks (8000 samples at 16kHz) and queue them
+        chunk_size = 8000
+        num_chunks = 0
+        for i in range(0, len(wav_int16), chunk_size):
+            chunk = wav_int16[i:i + chunk_size]
+            if len(chunk) < chunk_size:
+                # Pad the last chunk with silence
+                chunk = np.pad(chunk, (0, chunk_size - len(chunk)), mode='constant')
+            try:
+                audio_queue.put_nowait(chunk)
+            except queue.Full:
+                try:
+                    audio_queue.get_nowait()
+                except queue.Empty:
+                    pass
+                audio_queue.put_nowait(chunk)
+            num_chunks += 1
+
+        # Auto-start lip sync
+        flag = 1
+
+        duration = len(wav_int16) / 16000
+        print(f"Audio file uploaded: {audio_file.filename}, duration: {duration:.1f}s, chunks: {num_chunks}")
+        return jsonify({"status": "ok", "duration": duration, "chunks": num_chunks})
+    except Exception as e:
+        print(f"Audio file upload error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 400
+
+
 @app.route('/video_feed', methods=['POST', 'GET'])
 def video_feed():
     global flag
@@ -144,4 +207,4 @@ if __name__=="__main__":
     # HTTPS is required for getUserMedia (mic access) from remote browsers
     generate_self_signed_cert()
     ssl_context = ('cert.pem', 'key.pem')
-    app.run(host="0.0.0.0", port=8080, debug=False, threaded=True, ssl_context=ssl_context)
+    app.run(host="0.0.0.0", port=8080, debug=False, threaded=True)

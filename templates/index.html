@@ -104,7 +104,17 @@
                       <p>Supported file formats: JPG, JPEG, PNG</p>
                     </div>
                     <div class="blockquote blockquote-primary">
-                      <h4>Generate Wav2Lip</h4>
+                      <h4>Upload audio file to lip-sync</h4>
+                      <input type="file" id="audioFileInput" accept="audio/*" style="display: none;">
+                      <label for="audioFileInput" class="btn btn-dark btn-rounded btn-fw">Browse Audio</label>
+                      <span id="selectedAudioName"></span>
+                      <br><br>
+                      <button id="uploadAudioBtn" class="btn btn-outline-primary btn-fw" onclick="uploadAudioFile()" disabled>Upload & Start</button>
+                      <span id="audioUploadStatus" style="margin-left: 10px;"></span>
+                      <p>Supported: WAV, MP3, OGG, FLAC, M4A</p>
+                    </div>
+                    <div class="blockquote blockquote-primary">
+                      <h4>Or use microphone</h4>
                       <button id="startBtn" class="btn btn-outline-success btn-fw" onclick="startLipSync()">Start</button>
                       <button id="stopBtn" class="btn btn-outline-danger btn-fw" onclick="stopLipSync()">Stop</button>
                       <span id="micStatus" style="margin-left: 10px;"></span>
@@ -297,6 +307,42 @@
         fetch('/requests', { method: 'POST', body: formData })
           .then(() => console.log('Stop sent'))
           .catch(err => console.error('Stop error:', err));
+      }
+
+      // Audio file upload
+      document.getElementById('audioFileInput').addEventListener('change', function() {
+        const fileName = this.files[0] ? this.files[0].name : '';
+        document.getElementById('selectedAudioName').textContent = fileName;
+        document.getElementById('uploadAudioBtn').disabled = !this.files[0];
+        document.getElementById('audioUploadStatus').textContent = '';
+      });
+
+      function uploadAudioFile() {
+        const fileInput = document.getElementById('audioFileInput');
+        if (!fileInput.files[0]) return;
+
+        const statusEl = document.getElementById('audioUploadStatus');
+        const btn = document.getElementById('uploadAudioBtn');
+        btn.disabled = true;
+        statusEl.textContent = 'Uploading...';
+
+        const formData = new FormData();
+        formData.append('audio', fileInput.files[0]);
+
+        fetch('/upload_audio', { method: 'POST', body: formData })
+          .then(r => r.json())
+          .then(data => {
+            if (data.status === 'ok') {
+              statusEl.textContent = `Playing ${data.duration.toFixed(1)}s audio (${data.chunks} chunks)`;
+            } else {
+              statusEl.textContent = 'Error: ' + data.message;
+              btn.disabled = false;
+            }
+          })
+          .catch(err => {
+            statusEl.textContent = 'Upload failed: ' + err.message;
+            btn.disabled = false;
+          });
       }
     </script>
   </body>
