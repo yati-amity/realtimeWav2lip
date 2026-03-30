@@ -84,6 +84,7 @@ class Wav2LipInference:
         self.img_tk = None
 
 
+
     def load_wav2lip_openvino_model(self, model_path=None, device_name=None):
         '''
         func to load open vino model
@@ -355,16 +356,10 @@ def update_frames(full_frames, audio_queue, inference_pipline):
 
         for p, f, c in zip(pred, frames, coords):
             y1, y2, x1, x2 = c
-            p = cv2.resize(p.astype(np.uint8), (x2 - x1, y2 - y1))
-            
+            p = cv2.resize(p.astype(np.uint8), (x2 - x1, y2 - y1), interpolation=cv2.INTER_LANCZOS4)
             f[y1:y2, x1:x2] = p
 
-            # Convert frame to RGB format
-            #frame_rgb = cv2.cvtColor(f, cv2.COLOR_BGR2RGB)
-           
-            # Encode the image to base64
-            _, buffer = cv2.imencode('.jpg', f)
-            buffer = np.array(buffer)
+            _, buffer = cv2.imencode('.jpg', f, [cv2.IMWRITE_JPEG_QUALITY, 97])
             buffer = buffer.tobytes()
             
             yield (b'--frame\r\n'

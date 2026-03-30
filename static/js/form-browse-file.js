@@ -14,6 +14,8 @@ document.getElementById('fileInput').addEventListener('change', function() {
   .then(response => {
     if (response.ok) {
       console.log('File uploaded successfully');
+      // Reload page so the <img src=/video_feed> establishes a new MJPEG stream
+      window.location.reload();
     } else {
       console.error('Error uploading file');
     }

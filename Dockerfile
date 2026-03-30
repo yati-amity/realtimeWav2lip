@@ -1,41 +1,33 @@
-# Use a base image with Python and necessary dependencies
-FROM python:3.10-slim
+# CUDA base image for GPU inference on RunPod
+FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
 
-LABEL maintainer="krishna158@live.com"
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
 
-# Set environment variables
-ENV PYTHONDONTWRITEBYTECODE 1
-ENV PYTHONUNBUFFERED 1
-
-# Set working directory
 WORKDIR /app
-
-# Copy requirements file
-COPY requirements.txt /app/requirements.txt
 
 # Install system dependencies
 RUN apt-get update && \
-    apt-get install -y \
-        build-essential \
+    apt-get install -y --no-install-recommends \
         libsm6 \
         libxext6 \
         libxrender-dev \
         libgl1-mesa-glx \
         libglib2.0-0 \
         libsndfile1 \
-        wget \
-        gcc && \
+        openssl \
+        wget && \
     rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python dependencies (skip pyaudio - not needed)
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir $(grep -v pyaudio requirements.txt)
 
-# Copy the application into the container
+# Copy application code
 COPY . /app
 
-# Expose port 8080
+# RunPod exposes this port
 EXPOSE 8080
 
-# Run the Flask application
 ENTRYPOINT ["python"]
 CMD ["/app/app.py"]

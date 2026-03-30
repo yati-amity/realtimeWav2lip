@@ -10,7 +10,7 @@ import numpy as np
 app=Flask(__name__) 
 
 app.config['IMAGE_DIR'] = './assets/uploaded_images/' 
-app.config['Filename'] = ''
+app.config['Filename'] = 'Elon_Musk.jpg'  # Default face image
 
 # Ensure required directories exist
 os.makedirs('./assets/uploaded_images/', exist_ok=True)
@@ -55,6 +55,9 @@ def upload():
     app.config['Filename'] = file.filename
     file.save(os.path.join(app.config['IMAGE_DIR'], file.filename))
 
+    # Return JSON for AJAX requests, redirect for form submissions
+    if request.headers.get('X-Requested-With') == 'XMLHttpRequest' or 'application/json' in request.headers.get('Accept', ''):
+        return jsonify({"status": "ok", "filename": file.filename})
     return redirect("/")
 
 global flag
@@ -115,7 +118,12 @@ def video_feed():
     global flag
     try:    
         if app.config['Filename']!='':        
-            return Response(main(os.path.join(app.config['IMAGE_DIR'], app.config['Filename']), lambda: flag, audio_queue) ,mimetype='multipart/x-mixed-replace; boundary=frame')
+            response = Response(main(os.path.join(app.config['IMAGE_DIR'], app.config['Filename']), lambda: flag, audio_queue),
+                               mimetype='multipart/x-mixed-replace; boundary=frame')
+            response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+            response.headers['Pragma'] = 'no-cache'
+            response.headers['Expires'] = '0'
+            return response
     except Exception as e:
         print(e)
     return ""
@@ -136,4 +144,4 @@ if __name__=="__main__":
     # HTTPS is required for getUserMedia (mic access) from remote browsers
     generate_self_signed_cert()
     ssl_context = ('cert.pem', 'key.pem')
-    app.run(host="0.0.0.0", port=8080, debug=True, threaded=True, ssl_context=ssl_context)
+    app.run(host="0.0.0.0", port=8080, debug=False, threaded=True, ssl_context=ssl_context)
